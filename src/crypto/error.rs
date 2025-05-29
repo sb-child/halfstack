@@ -4,8 +4,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
 
-use crate::client;
-
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("unsupported curve type")]
