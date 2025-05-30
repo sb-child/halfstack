@@ -6,16 +6,21 @@
 
 pub mod error;
 
-use std::ops::Deref;
+use std::{io::Write, ops::Deref};
 
 use generic_array::GenericArray;
 use jose_jwk::Jwk;
 use p256::{
     EncodedPoint,
-    ecdsa::{SigningKey, VerifyingKey},
+    ecdsa::{
+        Signature, SigningKey, VerifyingKey,
+        signature::{DigestSigner, DigestVerifier},
+    },
 };
+use sha2::Digest;
+use zeroize::ZeroizeOnDrop;
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, ZeroizeOnDrop)]
 pub struct ES256 {
     key: SigningKey,
 }
@@ -29,11 +34,11 @@ impl ES256 {
 
     pub fn from_jwk(k: &Jwk) -> Result<Self, error::ParseError> {
         if k.prm.alg != Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256)) {
-            return Err(error::ParseError::InvalidKeyParameters);
+            return Err(error::ParseError::UnsupportedAlgorithm);
         }
         let ec = match &k.key {
             jose_jwk::Key::Ec(ec) => ec,
-            _ => return Err(error::ParseError::UnsupportedCurve),
+            _ => return Err(error::ParseError::UnsupportedAlgorithm),
         };
         if ec.crv != jose_jwk::EcCurves::P256 {
             return Err(error::ParseError::UnsupportedCurve);
@@ -48,12 +53,12 @@ impl ES256 {
     }
 
     pub fn to_jwk(&self) -> Result<Jwk, error::ComposeError> {
-        let d = self.key.as_nonzero_scalar();
-        let da = d.to_bytes();
-        let db = da.deref();
         let p = self.key.verifying_key().to_encoded_point(false);
         let x = p.x().ok_or(error::ComposeError::KeyConversionFailed)?;
         let y = p.y().ok_or(error::ComposeError::KeyConversionFailed)?;
+        let d = self.key.as_nonzero_scalar();
+        let da = d.to_bytes();
+        let db = da.deref();
         let xb = x.deref();
         let yb = y.deref();
         let curve = jose_jwk::Ec {
@@ -63,8 +68,10 @@ impl ES256 {
             y: yb.to_vec().into(),
         };
         let key = jose_jwk::Key::Ec(curve);
-        let mut prm = jose_jwk::Parameters::default();
-        prm.alg = Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256));
+        let prm = jose_jwk::Parameters {
+            alg: Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256)),
+            ..Default::default()
+        };
         let jwk = Jwk { key, prm };
         Ok(jwk)
     }
@@ -73,6 +80,13 @@ impl ES256 {
         ES256Pub {
             key: *self.key.verifying_key(),
         }
+    }
+
+    pub fn sign(&self, msg: &[u8]) -> Result<Signature, error::SignError> {
+        let mut d = sha2::Sha256::new();
+        d.write_all(msg).map_err(error::SignError::HashError)?;
+        let (r, _): (Signature, _) = self.key.try_sign_digest(d)?;
+        Ok(r)
     }
 }
 
@@ -116,10 +130,19 @@ impl ES256Pub {
             y: yb.to_vec().into(),
         };
         let key = jose_jwk::Key::Ec(curve);
-        let mut prm = jose_jwk::Parameters::default();
-        prm.alg = Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256));
+        let prm = jose_jwk::Parameters {
+            alg: Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256)),
+            ..Default::default()
+        };
         let jwk = Jwk { key, prm };
         Ok(jwk)
+    }
+
+    pub fn verify(&self, msg: &[u8], sign: &Signature) -> Result<(), error::VerifyError> {
+        let mut d = sha2::Sha256::new();
+        d.write_all(msg).map_err(error::VerifyError::HashError)?;
+        self.key.verify_digest(d, sign)?;
+        Ok(())
     }
 }
 

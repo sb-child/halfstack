@@ -6,20 +6,36 @@
 
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
-    #[error("unsupported curve type")]
+    #[error("unsupported curve")]
     UnsupportedCurve,
-    #[error("invalid JWK format")]
-    InvalidJwkFormat,
     #[error("missing required field")]
     MissingField,
     #[error("invalid key parameters")]
     InvalidKeyParameters,
+    #[error("unsupported algorithm")]
+    UnsupportedAlgorithm,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ComposeError {
     #[error("key conversion failed")]
     KeyConversionFailed,
-    #[error("invalid key parameters")]
-    InvalidKeyParameters,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SignError {
+    #[error("hash error: {0}")]
+    HashError(#[from] std::io::Error),
+
+    #[error("signature error: {0}")]
+    SignatureError(#[from] p256::ecdsa::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum VerifyError {
+    #[error("hash error: {0}")]
+    HashError(#[from] std::io::Error),
+
+    #[error("verify error: {0}")]
+    VerifyError(#[from] p256::ecdsa::Error),
 }
