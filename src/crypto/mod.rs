@@ -8,7 +8,8 @@ pub mod error;
 
 use std::ops::Deref;
 
-use jsonwebkey::{ByteArray, Curve, JsonWebKey};
+use generic_array::GenericArray;
+use jose_jwk::Jwk;
 use p256::{
     EncodedPoint,
     ecdsa::{SigningKey, VerifyingKey},
@@ -26,28 +27,27 @@ impl ES256 {
         Self { key: prikey }
     }
 
-    pub fn from_jwk(k: &JsonWebKey) -> Result<Self, error::ParseError> {
-        let key = k.key.clone();
-        let curve = match *key {
-            jsonwebkey::Key::EC { curve } => curve,
-            _ => {
-                return Err(error::ParseError::InvalidJwkFormat);
-            }
+    pub fn from_jwk(k: &Jwk) -> Result<Self, error::ParseError> {
+        if k.prm.alg != Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256)) {
+            return Err(error::ParseError::InvalidKeyParameters);
+        }
+        let ec = match &k.key {
+            jose_jwk::Key::Ec(ec) => ec,
+            _ => return Err(error::ParseError::UnsupportedCurve),
         };
-        let d = match curve {
-            Curve::P256 { d, x: _, y: _ } => d,
-            _ => {
-                return Err(error::ParseError::UnsupportedCurve);
-            }
+        if ec.crv != jose_jwk::EcCurves::P256 {
+            return Err(error::ParseError::UnsupportedCurve);
+        }
+        let d = &ec.d;
+        let Some(d) = d else {
+            return Err(error::ParseError::MissingField);
         };
-        let d = d.ok_or(error::ParseError::MissingField)?;
-        let db = d.deref();
-        let sk = SigningKey::from_bytes(db.into())
-            .map_err(|_| error::ParseError::InvalidKeyParameters)?;
+        let da = GenericArray::from_slice(d);
+        let sk = SigningKey::from_bytes(da).map_err(|_| error::ParseError::InvalidKeyParameters)?;
         Ok(Self { key: sk })
     }
 
-    pub fn to_jwk(&self) -> Result<JsonWebKey, error::ComposeError> {
+    pub fn to_jwk(&self) -> Result<Jwk, error::ComposeError> {
         let d = self.key.as_nonzero_scalar();
         let da = d.to_bytes();
         let db = da.deref();
@@ -56,15 +56,16 @@ impl ES256 {
         let y = p.y().ok_or(error::ComposeError::KeyConversionFailed)?;
         let xb = x.deref();
         let yb = y.deref();
-        let curve = Curve::P256 {
-            d: Some(ByteArray::from_slice(db)),
-            x: ByteArray::from_slice(xb),
-            y: ByteArray::from_slice(yb),
+        let curve = jose_jwk::Ec {
+            crv: jose_jwk::EcCurves::P256,
+            d: Some(db.to_vec().into()),
+            x: xb.to_vec().into(),
+            y: yb.to_vec().into(),
         };
-        let key = jsonwebkey::Key::EC { curve };
-        let mut jwk = JsonWebKey::new(key);
-        jwk.set_algorithm(jsonwebkey::Algorithm::ES256)
-            .map_err(|_| error::ComposeError::InvalidKeyParameters)?;
+        let key = jose_jwk::Key::Ec(curve);
+        let mut prm = jose_jwk::Parameters::default();
+        prm.alg = Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256));
+        let jwk = Jwk { key, prm };
         Ok(jwk)
     }
 
@@ -81,39 +82,43 @@ pub struct ES256Pub {
 }
 
 impl ES256Pub {
-    pub fn from_jwk(k: &JsonWebKey) -> Result<Self, error::ParseError> {
-        let key = k.key.clone();
-        let curve = match *key {
-            jsonwebkey::Key::EC { curve } => curve,
-            _ => return Err(error::ParseError::InvalidJwkFormat),
-        };
-        let (x, y) = match curve {
-            Curve::P256 { d: _, x, y } => (x, y),
+    pub fn from_jwk(k: &Jwk) -> Result<Self, error::ParseError> {
+        if k.prm.alg != Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256)) {
+            return Err(error::ParseError::InvalidKeyParameters);
+        }
+        let ec = match &k.key {
+            jose_jwk::Key::Ec(ec) => ec,
             _ => return Err(error::ParseError::UnsupportedCurve),
         };
-        let xb = x.deref();
-        let yb = y.deref();
-        let p = EncodedPoint::from_affine_coordinates(xb.into(), yb.into(), false);
+        if ec.crv != jose_jwk::EcCurves::P256 {
+            return Err(error::ParseError::UnsupportedCurve);
+        }
+        let x = &ec.x;
+        let y = &ec.y;
+        let xa = GenericArray::from_slice(x);
+        let ya = GenericArray::from_slice(y);
+        let p = EncodedPoint::from_affine_coordinates(xa, ya, false);
         let pk = VerifyingKey::from_encoded_point(&p)
             .map_err(|_| error::ParseError::InvalidKeyParameters)?;
         Ok(Self { key: pk })
     }
 
-    pub fn to_jwk(&self) -> Result<JsonWebKey, error::ComposeError> {
+    pub fn to_jwk(&self) -> Result<Jwk, error::ComposeError> {
         let p = self.key.to_encoded_point(false);
         let x = p.x().ok_or(error::ComposeError::KeyConversionFailed)?;
         let y = p.y().ok_or(error::ComposeError::KeyConversionFailed)?;
         let xb = x.deref();
         let yb = y.deref();
-        let curve = Curve::P256 {
+        let curve = jose_jwk::Ec {
+            crv: jose_jwk::EcCurves::P256,
             d: None,
-            x: ByteArray::from_slice(xb),
-            y: ByteArray::from_slice(yb),
+            x: xb.to_vec().into(),
+            y: yb.to_vec().into(),
         };
-        let key = jsonwebkey::Key::EC { curve };
-        let mut jwk = JsonWebKey::new(key);
-        jwk.set_algorithm(jsonwebkey::Algorithm::ES256)
-            .map_err(|_| error::ComposeError::InvalidKeyParameters)?;
+        let key = jose_jwk::Key::Ec(curve);
+        let mut prm = jose_jwk::Parameters::default();
+        prm.alg = Some(jose_jwa::Algorithm::Signing(jose_jwa::Signing::Es256));
+        let jwk = Jwk { key, prm };
         Ok(jwk)
     }
 }
